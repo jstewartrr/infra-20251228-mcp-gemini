@@ -1,5 +1,5 @@
 """
-Sovereign Mind Gemini MCP Server v1.0
+Sovereign Mind Gemini MCP Server v1.1
 =====================================
 Uses Google Cloud Vertex AI with service account authentication.
 """
@@ -37,8 +37,8 @@ GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.0-flash-exp")
 SM_GATEWAY_URL = os.environ.get("SM_GATEWAY_URL", "https://sm-mcp-gateway.lemoncoast-87756bcf.eastus.azurecontainerapps.io")
 
 SNOWFLAKE_ACCOUNT = os.environ.get("SNOWFLAKE_ACCOUNT", "jga82554.east-us-2.azure")
-SNOWFLAKE_USER = os.environ.get("SNOWFLAKE_USER", "JOHN_GROK")
-SNOWFLAKE_PASSWORD = os.environ.get("SNOWFLAKE_PASSWORD", "GrokMind2025Secure")
+SNOWFLAKE_USER = os.environ.get("SNOWFLAKE_USER", "AZURE_WEST")
+SNOWFLAKE_PASSWORD = os.environ.get("SNOWFLAKE_PASSWORD", "")
 SNOWFLAKE_DATABASE = os.environ.get("SNOWFLAKE_DATABASE", "SOVEREIGN_MIND")
 SNOWFLAKE_WAREHOUSE = os.environ.get("SNOWFLAKE_WAREHOUSE", "SOVEREIGN_MIND_WH")
 
@@ -125,6 +125,26 @@ def write_to_hive_mind(source, category, summary, workstream="GENERAL", priority
         return False
 
 
+def extract_message(args):
+    """Extract message from args, handling both 'message' (string) and 'messages' (array) formats."""
+    msg = args.get("message", "")
+    if msg:
+        return msg
+    msg = args.get("prompt", "")
+    if msg:
+        return msg
+    messages = args.get("messages", [])
+    if isinstance(messages, list) and len(messages) > 0:
+        parts = []
+        for m in messages:
+            if isinstance(m, str):
+                parts.append(m)
+            elif isinstance(m, dict):
+                parts.append(m.get("content", m.get("text", str(m))))
+        return "\n".join(parts)
+    return ""
+
+
 def call_gemini(message, system_prompt):
     init_vertexai()
     try:
@@ -140,7 +160,7 @@ def call_gemini(message, system_prompt):
 def index():
     conn = get_snowflake_connection()
     return jsonify({
-        "service": "gemini-mcp", "version": "1.0.0", "status": "healthy",
+        "service": "gemini-mcp", "version": "1.1.0", "status": "healthy",
         "instance": "GEMINI", "platform": "Google AI (Vertex AI)", "model": GEMINI_MODEL,
         "sovereign_mind": True, "hive_mind_connected": conn is not None,
         "features": ["sovereign_mind_prompt", "hive_mind_context", "vertex_ai", "cors_enabled"]
@@ -161,7 +181,7 @@ def mcp_endpoint():
     if method == "tools/list":
         tools = [
             {"name": "gemini_generate_content", "description": "Generate content with Gemini (Sovereign Mind)", "inputSchema": {"type": "object", "properties": {"prompt": {"type": "string"}}, "required": ["prompt"]}},
-            {"name": "gemini_chat", "description": "Chat with Gemini", "inputSchema": {"type": "object", "properties": {"message": {"type": "string"}}, "required": ["message"]}},
+            {"name": "gemini_chat", "description": "Chat with Gemini", "inputSchema": {"type": "object", "properties": {"message": {"type": "string"}, "messages": {"type": "array", "description": "Chat messages array (alternative to message)"}}}},
             {"name": "sm_hive_mind_read", "description": "Read Hive Mind", "inputSchema": {"type": "object", "properties": {"limit": {"type": "integer"}}}},
             {"name": "sm_hive_mind_write", "description": "Write to Hive Mind", "inputSchema": {"type": "object", "properties": {"category": {"type": "string"}, "summary": {"type": "string"}}, "required": ["category", "summary"]}}
         ]
@@ -171,7 +191,9 @@ def mcp_endpoint():
         tool, args = params.get("name", ""), params.get("arguments", {})
         
         if tool in ["gemini_generate_content", "gemini_chat"]:
-            msg = args.get("message", args.get("prompt", ""))
+            msg = extract_message(args)
+            if not msg:
+                return jsonify({"jsonrpc": "2.0", "id": req_id, "result": {"content": [{"type": "text", "text": "Error: No message provided. Use 'message' (string) or 'messages' (array) or 'prompt' (string)."}], "isError": True}})
             hive_context = query_hive_mind(3)
             system = f"{SOVEREIGN_MIND_SYSTEM_PROMPT}\n\n# HIVE MIND CONTEXT\n{hive_context}"
             response = call_gemini(msg, system)
